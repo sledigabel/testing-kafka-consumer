@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"os"
 	"time"
-	"github.com/Shopify/sarama"
+	cluster "github.com/bsm/sarama-cluster"
 	"strings"
 	"unsafe"
+	"log"
 )
 
 
-var num_msg []uint64
-var total_size []uint64
 var debug bool
+
+const rateRefresh = 60
 
 func PrintDebug(s ...interface{}) {
 	if debug {
@@ -31,18 +32,6 @@ func usage() {
 	fmt.Printf("Usage: %s -bootstrap BOOTSTRAP [-rate MSG_RATE] [-duration DURATION] [-dryrun]\n\n", os.Args[0])
 	flag.PrintDefaults()
 	os.Exit(1)
-}
-
-func average(nums []uint64, sizes []uint64) uint64{
-	var (
-		n uint64
-		s uint64
-	)
-	for i, v := range nums{
-		n += v
-		s += sizes[i]
-	}
-	return s / n
 }
 
 func main() {
@@ -73,64 +62,62 @@ func main() {
 		usage()
 	}
 
-	PrintDebug("Timing for",*param_duration)
-	period := time.NewTimer(*param_duration)
 
 	PrintDebug("Configuring the consumer")
-	config := sarama.NewConfig()
+	config := cluster.NewConfig()
 	config.Consumer.Return.Errors = true
-	sarama.Client()
-	config.ClientID = *param_group
-	config.
+	config.Group.Return.Notifications = true
 
 	// Create new consumer
-	master, err := sarama.NewConsumer(strings.Split(*param_bootstrap,","), config)
+	consumer, err := cluster.NewConsumer(strings.Split(*param_bootstrap,","), *param_group, []string{*param_topic}, config)
 	if err != nil {
 		panic(err)
 	}
 
-	defer master.Close()
-	var initialOffset int64 = sarama.OffsetOldest
+	PrintDebug("Timing for",*param_duration)
+	period := time.NewTimer(*param_duration)
+	ticker := time.NewTicker(time.Second*rateRefresh)
 
-	partitionList, err := master.Partitions(*param_topic)
-	PrintDebug("Found partitions: ", partitionList)
-	num_msg = make([]uint64,len(partitionList))
-	total_size = make([]uint64,len(partitionList))
-	closing := make(chan struct{})
+	defer consumer.Close()
 
-	for id, partition := range partitionList {
-		pc, err := master.ConsumePartition(*param_topic, partition, initialOffset)
-		if err != nil {
-			fmt.Printf("Failed to start consumer for partition %d: %s\n", partition, err)
-			panic(err)
+	rate := 0
+	var num_msg uint64 = 0
+	var total_size uint64 = 0
+
+	// consume errors
+	go func() {
+		for err := range consumer.Errors() {
+			log.Printf("Error: %s\n", err.Error())
 		}
+	}()
 
-		go func(pc sarama.PartitionConsumer,id int) {
-			PrintDebug("Starting thread id", id)
+	// consume notifications
+	go func() {
+		for ntf := range consumer.Notifications() {
+			PrintDebug("Rebalanced: %+v\n", ntf)
+		}
+	}()
 
-			go func (pc sarama.PartitionConsumer, id int) {
-				PrintDebug("handler thread id", id)
-				<- closing
-				pc.Close()
-				PrintDebug("Closing thread id", id)
-			}(pc,id)
-
-			for message := range pc.Messages() {
-				num_msg[id] += 1
-				total_size[id] += uint64(unsafe.Sizeof(message))
-				//PrintDebug("Update: ",id,num_msg[id],total_size[id])
-			}
-		}(pc,id)
+	PrintDebug("Here we go")
+	// consume messages, watch signals
+	for {
+		select {
+		case <-period.C:
+			PrintDebug("TOC")
+			consumer.Close()
+		case <- ticker.C:
+			fmt.Println("Current rate:",rate/rateRefresh,"messages per sec")
+			rate = 0
+		case msg := <- consumer.Messages():
+			//PrintDebug(msg.Value)
+			num_msg += 1
+			rate += 1
+			total_size += uint64(unsafe.Sizeof(msg.Value))
+			consumer.MarkOffset(msg,"")
+		}
 	}
 
-	select{
-		case <- period.C:
-			close(closing)
-			break
-	}
-	for i, v := range(num_msg){
-		fmt.Println("Partition #",i, "  Num:",v," Total Size:", total_size[i])
-	}
-	fmt.Println("Average msg size:",average(num_msg,total_size))
+	consumer.Close()
+	fmt.Println("Num:", num_msg, "Total Size:", total_size, "Average msg size:",total_size/num_msg)
 
 }
