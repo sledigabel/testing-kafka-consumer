@@ -10,4 +10,4 @@ RUN go build /kafka-consumer.go
 COPY start.sh /
 RUN chmod 755 /start.sh
 
-CMD /kafka-consumer.go $@
+CMD exec /kafka-consumer.go $@

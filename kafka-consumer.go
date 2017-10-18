@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unsafe"
 	"log"
+	"os/signal"
+	"syscall"
 )
 
 
@@ -62,6 +64,9 @@ func main() {
 		usage()
 	}
 
+	// declaring signal handlers
+	sigs := make(chan os.Signal)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	PrintDebug("Configuring the consumer")
 	config := cluster.NewConfig()
@@ -88,6 +93,7 @@ func main() {
 	go func() {
 		for err := range consumer.Errors() {
 			log.Printf("Error: %s\n", err.Error())
+			panic(err)
 		}
 	}()
 
@@ -100,11 +106,17 @@ func main() {
 
 	PrintDebug("Here we go")
 	// consume messages, watch signals
+	MAIN:
 	for {
 		select {
+		case <- sigs:
+			PrintDebug("Caught Interruption signal")
+			consumer.Close()
+			break MAIN
 		case <-period.C:
 			PrintDebug("TOC")
 			consumer.Close()
+			break MAIN
 		case <- ticker.C:
 			fmt.Println("Current rate:",rate/rateRefresh,"messages per sec")
 			rate = 0

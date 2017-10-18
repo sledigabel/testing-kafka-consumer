@@ -29,4 +29,4 @@ fi
 
 
 echo /kafka-consumer ${OPTIONS}
-/kafka-consumer ${OPTIONS}
+exec /kafka-consumer ${OPTIONS}
